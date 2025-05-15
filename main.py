@@ -11,58 +11,67 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 app = Flask(__name__)
 CORS(app, origins=["https://bitcoiners.africa"])
 
-# In-memory store (you can use Redis or SQLite later)
+# In-memory session storage
 session_threads = {}
 
 @app.route('/', methods=['GET'])
-def home():
-    return "Am alive!!"
+def health_check():
+    return "Bitcoin Sidekick API - Operational"
 
 @app.route('/api/chat', methods=['POST'])
-def chat():
+def chat_handler():
     try:
         data = request.get_json()
         user_message = data.get('message')
         user_id = data.get('user_id')
 
         if not user_message or not user_id:
-            return jsonify({"error": "Missing message or user_id"}), 400
+            return jsonify({"error": "Message and user_id required"}), 400
 
+        # Get or create thread
         thread_id = session_threads.get(user_id)
         if not thread_id:
             thread = openai.beta.threads.create()
             thread_id = thread.id
             session_threads[user_id] = thread_id
 
-        # Add message
+        # Add message to thread
         openai.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
             content=user_message
         )
 
-        # Run Assistant
+        # Process with Assistant
         run = openai.beta.threads.runs.create(
             thread_id=thread_id,
             assistant_id="asst_wXH9h4xeSZ3nmPZgjWqvRVfL"
         )
 
-        # Wait for completion
+        # Poll for completion
         while True:
-            status = openai.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+            status = openai.beta.threads.runs.retrieve(
+                thread_id=thread_id,
+                run_id=run.id
+            )
             if status.status == "completed":
                 break
-            elif status.status == "failed":
-                return jsonify({"error": "Run failed"}), 500
+            if status.status in ["failed", "cancelled"]:
+                return jsonify({"error": "Processing failed"}), 500
 
-        # Get last assistant reply
+        # Get response
         messages = openai.beta.threads.messages.list(thread_id=thread_id)
-        bot_reply = next((msg.content[0].text.value for msg in messages.data if msg.role == "assistant"), None)
+        bot_reply = next(
+            (msg.content[0].text.value 
+             for msg in messages.data 
+             if msg.role == "assistant"), 
+            "Could not generate response"
+        )
 
         return jsonify({"reply": bot_reply})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
